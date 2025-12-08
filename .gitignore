@@ -1,0 +1,27 @@
+# Node / TypeScript
+node_modules/
+dist/
+tmp/
+
+# Logs and coverage
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+coverage/
+
+# SAM / build artifacts
+.aws-sam/
+.npm/
+.parcel-cache/
+
+# Local config
+.env
+.env.*
+samconfig.toml
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,113 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: RSS feed fetcher posting updates to Discord via Webhook.
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 60
+    MemorySize: 256
+    Architectures:
+      - arm64
+    Tracing: Active
+
+Resources:
+  RssStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: feedUrl
+          AttributeType: S
+      KeySchema:
+        - AttributeName: feedUrl
+          KeyType: HASH
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
+  RssFetcherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handler.rssHandler
+      Description: Fetch RSS feeds, post updates to Discord, and persist progress.
+      Environment:
+        Variables:
+          DISCORD_WEBHOOK_URL: !Ref DiscordWebhookUrl
+          STATE_TABLE: !Ref RssStateTable
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:BatchGetItem
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:Scan
+              Resource: !GetAtt RssStateTable.Arn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: arn:aws:logs:*:*:*
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/handler.ts
+        Minify: true
+        Target: es2020
+        Platform: node
+        Sourcemap: true
+        External:
+          - aws-sdk
+
+  RssScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Run periodically to fetch RSS feeds.
+      Name: !Sub '${AWS::StackName}-rss-fetcher-schedule'
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt RssFetcherFunction.Arn
+          Id: RssFetcherTarget
+
+  RssFetcherLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${RssFetcherFunction}
+      RetentionInDays: 3
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
+  AllowEventBridgeInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref RssFetcherFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt RssScheduleRule.Arn
+
+Parameters:
+  DiscordWebhookUrl:
+    Type: String
+    Default: ""
+    Description: Optional fallback Discord Webhook URL (normally unused; per-feed webhookUrl in DynamoDB is required).
+  ScheduleExpression:
+    Type: String
+    Default: "cron(0 21,0,3,6,9,12,15,18 * * ? *)"
+    Description: "EventBridge schedule expression for Lambda invocation (default: 6/9/12/15/18/21/0/3 JST)."
+
+Outputs:
+  FunctionName:
+    Description: RSS fetcher Lambda function name
+    Value: !Ref RssFetcherFunction
+  StateTableName:
+    Description: DynamoDB table storing feed processing state
+    Value: !Ref RssStateTable

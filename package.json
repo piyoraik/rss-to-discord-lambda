@@ -1,0 +1,23 @@
+{
+  "name": "rss-lambda",
+  "version": "1.0.0",
+  "description": "Fetch RSS feeds and post updates to Discord via AWS Lambda",
+  "main": "dist/handler.js",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.610.0",
+    "@aws-sdk/client-dynamodb": "^3.610.0",
+    "@aws-sdk/lib-dynamodb": "^3.610.0",
+    "axios": "^1.7.7",
+    "fast-xml-parser": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.138",
+    "@types/node": "^22.7.4",
+    "esbuild": "^0.23.1",
+    "typescript": "^5.4.5"
+  }
+}
