@@ -11,7 +11,19 @@ Globals:
       - arm64
     Tracing: Active
 
+Conditions:
+  HasInferenceProfileArn: !Not [!Equals [!Ref InferenceProfileArn, ""]]
+
 Resources:
+  RssQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      VisibilityTimeout: 120
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
   RssStateTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -33,11 +45,12 @@ Resources:
     Properties:
       CodeUri: .
       Handler: src/handler.rssHandler
-      Description: Fetch RSS feeds, post updates to Discord, and persist progress.
+      Description: Fetch RSS feeds and enqueue new items.
       Environment:
         Variables:
           DISCORD_WEBHOOK_URL: !Ref DiscordWebhookUrl
           STATE_TABLE: !Ref RssStateTable
+          QUEUE_URL: !Ref RssQueue
       Policies:
         - Statement:
             - Effect: Allow
@@ -55,6 +68,11 @@ Resources:
                 - logs:CreateLogStream
                 - logs:PutLogEvents
               Resource: arn:aws:logs:*:*:*
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt RssQueue.Arn
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -86,6 +104,73 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
 
+  RssSummaryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/summary.handler
+      Description: Summarize feed items with Bedrock and post to Discord.
+      Environment:
+        Variables:
+          STATE_TABLE: !Ref RssStateTable
+          BEDROCK_REGION: !Ref BedrockRegion
+          MODEL_ID: !If
+            - HasInferenceProfileArn
+            - !Ref InferenceProfileArn
+            - !Ref FoundationModelId
+          MODEL_DISPLAY_NAME: !Ref FoundationModelId
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+                - dynamodb:GetItem
+              Resource: !GetAtt RssStateTable.Arn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:Converse
+              # Allow both the inference profile (preferred for Nova 2 Lite) and the underlying foundation model ID.
+              Resource: !If
+                - HasInferenceProfileArn
+                - - !Ref InferenceProfileArn
+                  - !Sub 'arn:aws:bedrock:*::foundation-model/${FoundationModelId}'
+                - !Sub 'arn:aws:bedrock:*::foundation-model/${FoundationModelId}'
+        - Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: arn:aws:logs:*:*:*
+      Events:
+        QueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RssQueue.Arn
+            BatchSize: 1
+            Enabled: true
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - src/summary.ts
+        Minify: true
+        Target: es2020
+        Platform: node
+        Sourcemap: true
+        External:
+          - aws-sdk
+
+  RssSummaryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${RssSummaryFunction}
+      RetentionInDays: 3
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
   AllowEventBridgeInvoke:
     Type: AWS::Lambda::Permission
     Properties:
@@ -99,10 +184,37 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional fallback Discord Webhook URL (normally unused; per-feed webhookUrl in DynamoDB is required).
+
+  BedrockRegion:
+    Type: String
+    Default: ap-northeast-1
+    Description: Region used for Bedrock model invocation.
+
+  InferenceProfileArn:
+    Type: String
+    Default: ""
+    Description: Optional. Bedrock inference profile ARN (arn:aws:bedrock:REGION:ACCOUNT:inference-profile/...). If set, RssSummaryFunction will use this.
+    AllowedPattern: '^$|^arn:aws:bedrock:[^:]+:[0-9]{12}:inference-profile/.+$'
+    ConstraintDescription: Must be empty or a Bedrock inference profile ARN (inference-profile/...)
+
+  FoundationModelId:
+    Type: String
+    Default: amazon.nova-2-lite-v1:0
+    Description: Bedrock foundation model ID used when InferenceProfileArn is empty.
+    AllowedPattern: '^amazon\.nova(?:-2)?-lite-v1:0$'
+    ConstraintDescription: Must be amazon.nova-2-lite-v1:0 or amazon.nova-lite-v1:0
+
+  ModelId:
+    Type: String
+    Default: ""
+    Description: Bedrock inference profile ARN for InvokeModel (legacy; kept for backward compatibility)
+    AllowedPattern: '^$|^arn:aws:bedrock:[^:]+:[0-9]{12}:inference-profile/.+$'
+    ConstraintDescription: Must be empty or a Bedrock inference profile ARN (inference-profile/...)
+
   ScheduleExpression:
     Type: String
-    Default: "cron(0 21,0,3,6,9,12,15,18 * * ? *)"
-    Description: "EventBridge schedule expression for Lambda invocation (default: 6/9/12/15/18/21/0/3 JST)."
+    Default: "cron(15 * * * ? *)"
+    Description: "EventBridge schedule expression for Lambda invocation (default: top of every hour)."
 
 Outputs:
   FunctionName:
@@ -111,3 +223,6 @@ Outputs:
   StateTableName:
     Description: DynamoDB table storing feed processing state
     Value: !Ref RssStateTable
+  QueueUrl:
+    Description: SQS queue URL for feed items
+    Value: !Ref RssQueue

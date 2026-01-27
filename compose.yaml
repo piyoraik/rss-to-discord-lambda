@@ -1,0 +1,18 @@
+services:
+  dynamodb:
+    image: amazon/dynamodb-local
+    command: -jar DynamoDBLocal.jar -sharedDb -dbPath . -optimizeDbBeforeStartup
+    volumes:
+      - dynamodb:/home/dynamodblocal
+    ports:
+      - 8001:8000  # DynamoDB Local に外部からアクセス可能にするためのポートマッピング
+    networks:
+      - lambda-local
+
+volumes:
+  dynamodb:
+    driver: local  # ローカルストレージとして DynamoDB のデータを保存
+
+networks:
+  lambda-local:
+    external: true  # すでに存在する外部ネットワークに接続

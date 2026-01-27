@@ -1,5 +1,6 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { UpdateCommand, ScanCommand, DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { ScanCommand, DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import axios from 'axios';
 import { XMLParser } from 'fast-xml-parser';
 import type { APIGatewayProxyResult } from 'aws-lambda';
@@ -20,10 +21,12 @@ interface FeedConfig {
 }
 
 const STATE_TABLE = process.env.STATE_TABLE;
+const QUEUE_URL = process.env.QUEUE_URL;
 
 const MAX_POSTS_PER_FEED = 20;
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const sqs = new SQSClient({});
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '',
@@ -32,30 +35,7 @@ const parser = new XMLParser({
 /** 環境変数の存在チェックを行う */
 const validateEnv = () => {
   if (!STATE_TABLE) throw new Error('STATE_TABLE is not set');
-};
-
-/** DynamoDB に lastPublishedAt を保存する（既存より新しい場合のみ上書き） */
-const updateState = async (feedUrl: string, isoTimestamp: string): Promise<void> => {
-  try {
-    await dynamo.send(
-      new UpdateCommand({
-        TableName: STATE_TABLE!,
-        Key: { feedUrl },
-        UpdateExpression: 'SET lastPublishedAt = :ts',
-        ConditionExpression: 'attribute_not_exists(lastPublishedAt) OR lastPublishedAt < :ts',
-        ExpressionAttributeValues: {
-          ':ts': isoTimestamp,
-        },
-      })
-    );
-  } catch (err: any) {
-    if (err?.name === 'ConditionalCheckFailedException') {
-      // 既存の方が新しければ更新不要
-      return;
-    }
-    console.error(`Failed to update state for ${feedUrl}`, err);
-    throw err;
-  }
+  if (!QUEUE_URL) throw new Error('QUEUE_URL is not set');
 };
 
 /** XML ノードからテキストを抽出する */
@@ -101,14 +81,6 @@ const extractLink = (value: any): string => {
     );
   }
   return '';
-};
-
-/** Date を JST の文字列表現へ変換する */
-const formatDateTimeJst = (date: Date): string => {
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  const jstDate = new Date(date.getTime() + 9 * 60 * 60 * 1000);
-  return `${jstDate.getFullYear()}-${pad(jstDate.getMonth() + 1)}-${pad(jstDate.getDate())} ` +
-    `${pad(jstDate.getHours())}:${pad(jstDate.getMinutes())}:${pad(jstDate.getSeconds())}`;
 };
 
 /** RSS/Atom XML から記事一覧を取り出す */
@@ -168,15 +140,28 @@ const parseFeedItems = (xml: string): FeedItem[] => {
 };
 
 /** Discord Webhook へメッセージを送信する */
-const postToDiscord = async (content: string, webhookUrl: string) => {
-  await axios.post(
-    webhookUrl,
-    { content },
-    {
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 10000,
-    }
-  );
+const enqueueItems = async (items: FeedItem[], cfg: FeedConfig) => {
+  for (const item of items) {
+    const payload = {
+      feedUrl: cfg.feedUrl,
+      webhookUrl: cfg.webhookUrl,
+      title: item.title,
+      link: item.link,
+      publishedAt: item.publishedAt.toISOString(),
+    };
+    // SQS FIFO の MessageDeduplicationId は英数字と一部記号のみ許容されるためサニタイズする
+    const dedupRaw = `${cfg.feedUrl}-${item.publishedAt.toISOString()}-${item.link}`;
+    const dedupId = dedupRaw.replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 128) || Buffer.from(dedupRaw).toString('base64').slice(0, 128);
+
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: QUEUE_URL!,
+        MessageGroupId: cfg.feedUrl,
+        MessageDeduplicationId: dedupId,
+        MessageBody: JSON.stringify(payload),
+      })
+    );
+  }
 };
 
 /** DynamoDB からフィード設定（lastProcessed を含む）を取得する */
@@ -250,29 +235,8 @@ const processFeed = async (cfg: FeedConfig): Promise<void> => {
 
   console.log(`Found ${newItems.length} new items for feed ${feedUrl}`);
 
-  let success = 0;
-  let failure = 0;
-
-  for (const item of newItems) {
-    const content = `**${item.title}**\n投稿日時(JST): ${formatDateTimeJst(item.publishedAt)}\n${item.link}`;
-    try {
-      await postToDiscord(content, webhookUrl);
-      success += 1;
-    } catch (err) {
-      console.error(`Failed to post to Discord for ${item.link}`, err);
-      failure += 1;
-    }
-  }
-
-  if (newItems.length > 0) {
-    const latest = newItems[newItems.length - 1].publishedAt.toISOString();
-    await updateState(feedUrl, latest);
-    console.log(`Updated state for ${feedUrl} to ${latest}`);
-  }
-
-  console.log(
-    `Discord post summary for ${feedUrl}: success=${success}, failure=${failure}`
-  );
+  await enqueueItems(newItems, cfg);
+  console.log(`Enqueued items for ${feedUrl}: count=${newItems.length}`);
 };
 
 // エントリーポイント: 設定されたフィードを処理し、Discord へ投稿し、進捗を保存する
