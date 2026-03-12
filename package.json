@@ -5,7 +5,12 @@
   "main": "dist/handler.js",
   "license": "MIT",
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint src test --ext .ts",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "test": "tsx --test test/**/*.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.610.0",
@@ -14,12 +19,18 @@
     "@aws-sdk/lib-dynamodb": "^3.610.0",
     "axios": "^1.7.7",
     "cheerio": "^1.0.0-rc.12",
-    "fast-xml-parser": "^4.4.0"
+    "fast-xml-parser": "^4.4.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.138",
     "@types/node": "^22.7.4",
+    "@typescript-eslint/eslint-plugin": "^8.46.1",
+    "@typescript-eslint/parser": "^8.46.1",
     "esbuild": "^0.23.1",
+    "eslint": "^9.37.0",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.6",
     "typescript": "^5.4.5"
   }
 }

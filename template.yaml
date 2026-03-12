@@ -12,7 +12,7 @@ Globals:
     Tracing: Active
 
 Conditions:
-  HasInferenceProfileArn: !Not [!Equals [!Ref InferenceProfileArn, ""]]
+  HasInferenceProfileArn: !Not [!Equals [!Ref InferenceProfileArn, '']]
 
 Resources:
   RssQueue:
@@ -48,7 +48,6 @@ Resources:
       Description: Fetch RSS feeds and enqueue new items.
       Environment:
         Variables:
-          DISCORD_WEBHOOK_URL: !Ref DiscordWebhookUrl
           STATE_TABLE: !Ref RssStateTable
           QUEUE_URL: !Ref RssQueue
       Policies:
@@ -180,11 +179,6 @@ Resources:
       SourceArn: !GetAtt RssScheduleRule.Arn
 
 Parameters:
-  DiscordWebhookUrl:
-    Type: String
-    Default: ""
-    Description: Optional fallback Discord Webhook URL (normally unused; per-feed webhookUrl in DynamoDB is required).
-
   BedrockRegion:
     Type: String
     Default: ap-northeast-1
@@ -192,7 +186,7 @@ Parameters:
 
   InferenceProfileArn:
     Type: String
-    Default: ""
+    Default: ''
     Description: Optional. Bedrock inference profile ARN (arn:aws:bedrock:REGION:ACCOUNT:inference-profile/...). If set, RssSummaryFunction will use this.
     AllowedPattern: '^$|^arn:aws:bedrock:[^:]+:[0-9]{12}:inference-profile/.+$'
     ConstraintDescription: Must be empty or a Bedrock inference profile ARN (inference-profile/...)
@@ -206,15 +200,15 @@ Parameters:
 
   ModelId:
     Type: String
-    Default: ""
+    Default: ''
     Description: Bedrock inference profile ARN for InvokeModel (legacy; kept for backward compatibility)
     AllowedPattern: '^$|^arn:aws:bedrock:[^:]+:[0-9]{12}:inference-profile/.+$'
     ConstraintDescription: Must be empty or a Bedrock inference profile ARN (inference-profile/...)
 
   ScheduleExpression:
     Type: String
-    Default: "cron(15 * * * ? *)"
-    Description: "EventBridge schedule expression for Lambda invocation (default: top of every hour)."
+    Default: 'cron(0/15 0-14 * * ? *)'
+    Description: 'EventBridge schedule expression for Lambda invocation (default: every 15 minutes, 09:00-24:00 JST).'
 
 Outputs:
   FunctionName:
