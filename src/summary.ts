@@ -21,6 +21,7 @@ import { z } from 'zod';
 import type { SQSEvent, SQSRecord } from 'aws-lambda';
 
 import type { DedupeStrategy } from '@/dedupe';
+import { ConfigurationError } from '@/errors';
 import { logger } from '@/logger';
 import { sanitizeErrorForLog } from '@/redaction';
 import { normalizeWebhookUrls } from '@/webhooks';
@@ -130,7 +131,7 @@ const getEnv = (): {
     !looksLikeInferenceProfileId &&
     !looksLikeFoundationModelId
   ) {
-    throw new Error(
+    throw new ConfigurationError(
       'MODEL_ID must be an inference profile ARN/ID (e.g. arn:aws:bedrock:...:inference-profile/... or apac.amazon.nova-lite-v1:0) ' +
         'or a foundation model ID (e.g. amazon.nova-2-lite-v1:0)'
     );
@@ -339,24 +340,39 @@ const trimTextToLength = (text: string, maxLength: number): string => {
   return `${trimmed}\n...`;
 };
 
+const normalizeSummaryForReaders = (text: string): string => {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/^#{1,6}\s*(.+)$/gm, '【$1】')
+    .replace(/^---+\s*$/gm, '')
+    .replace(/^\s*[-*]\s+/gm, '・')
+    .replace(/^\s*\d+\.\s+/gm, '・')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
 const buildDiscordMessage = (
   payload: QueuePayload,
   summary: string,
   publishedAt: Date | null
 ): string => {
   const headerLines = [
-    `**${payload.title}**`,
+    `タイトル: ${payload.title}`,
     ...(publishedAt
       ? [`投稿日時(JST): ${formatDateTimeJst(publishedAt)}`]
       : []),
     payload.link,
   ];
   const header = headerLines.join('\n');
-  const summaryHeader = `AIによる要約(${MODEL_DISPLAY_NAME ?? MODEL_ID}):`;
-  const wrapperLength = `${header}\n\n${summaryHeader}\n\`\`\`\n\n\`\`\``
-    .length;
+  const summaryHeader = `要約(${MODEL_DISPLAY_NAME ?? MODEL_ID})`;
+  const normalizedSummary = normalizeSummaryForReaders(summary);
+  const wrapperLength = `${header}\n\n${summaryHeader}\n\`\`\`\n\n\`\`\``.length;
   const availableSummaryLength = DISCORD_CONTENT_LIMIT - wrapperLength;
-  const trimmedSummary = trimTextToLength(summary, availableSummaryLength);
+  const trimmedSummary = trimTextToLength(
+    normalizedSummary,
+    availableSummaryLength
+  );
 
   return [header, '', summaryHeader, '```', trimmedSummary, '```'].join('\n');
 };
@@ -422,7 +438,11 @@ const summarize = async (title: string, body: string): Promise<string> => {
   const prompt = [
     '以下の記事を日本語で要約してください。',
     '・簡潔に事実ベースでまとめる',
-    '・見出しと箇条書きを使って読みやすくまとめる',
+    '・非エンジニアでも読みやすい自然な日本語にする',
+    '・Markdown記法は使わない',
+    '・見出し記号、太字記号、コードブロック、表は使わない',
+    '・見出しが必要な場合は「【概要】」「【要点】」「【注意点】」のように【】を使う',
+    '・箇条書きが必要な場合は「・」だけを使う',
     `・${summaryPlan.targetLengthText}`,
     '・URLは付けない',
     `タイトル: ${title}`,
